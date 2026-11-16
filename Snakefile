@@ -1,106 +1,487 @@
 import pandas as pd
 import os
+import re
 
-#Default path to configfile. Needs to be modified before running the pipeline or a new configfile needs to be set with the -c flag
-configfile: config.get("configfile", "/media/deltagene/microbiome_2/AR_snakemake/config.yaml")
+# Load pipeline settings from the configuration file in the project directory.
+configfile: "config.yaml"
+output_folder = config["all"]["output_folder"]
+scripts_dir = os.path.join(workflow.basedir, config["all"]["scripts"])
 print(config)
 
+# Read sample identifiers from the first column of the sample list.
+# The CSV file has no header, and each row represents one sample.
 sample_file = config["all"]["samplelist_fp"]
-output_folder = config["all"]["output_folder"]
 print(sample_file)
 
-tags = list(pd.read_csv(sample_file, header = None).iloc[:,0])
+tags = list(pd.read_csv(sample_file, header=None).iloc[:, 0])
 
-try:
-	os.mkdir({output_folder})
-except:
-	print(f"Output folder {output_folder} already exists")
+# Remove Illumina sample and lane suffixes (e.g. _S51_L001) to create shorter sample names for the per-sample comparison reports.
+sample_names = [
+    re.sub(r"_S\d+_L\d+$", "", tag)
+    for tag in tags
+]
 
+# Create the output directory if it does not already exist.
+os.makedirs(output_folder, exist_ok=True)
+
+# Load additional Snakemake rules for AMR annotation normalization and cross-tool comparison reports.
+include: "workflow/normalization/normalization.smk"
+
+
+# Define all expected workflow outputs.
+# Snakemake uses this rule as the default target to determine which analyses and reports need to be generated.
 rule all:
     input:
+        # Genome assembly and StarAMR resistance gene detection
         scaffolds=expand(output_folder + "/{tag}_metaspades/scaffolds.fasta", tag=tags),
         results=expand(output_folder + "/{tag}_staramr/results.xlsx", tag=tags),
-        resistance=expand(output_folder + "/{tag}_collected_kraken_blast_results.tsv", tag=tags)
 
+        # Combined StarAMR, Kraken2 and BLAST results for resistance-associated scaffolds
+        resistance=expand(output_folder + "/{tag}_collected_kraken_blast_results.tsv", tag=tags),
+
+        # Hamronized StarAMR resistance annotations
+        hamronized=expand(output_folder + "/hamronized/staramr/{tag}.tsv", tag=tags),
+
+        # CARD/RGI resistance gene detection from assembled contigs and raw reads
+        card_contig=expand(output_folder + "/card/contig/{tag}_RGI.txt", tag=tags),
+        card_reads=expand(output_folder + "/card/reads/{tag}_RGI.gene_mapping_data.txt", tag=tags),
+
+        # Hamronized CARD/RGI annotations
+        hamronized_card_contig=expand(output_folder + "/hamronized/rgi/contig/{tag}.tsv", tag=tags),
+        hamronized_card_reads=expand(output_folder + "/hamronized/rgi/reads/{tag}.tsv", tag=tags),
+
+        # Combined Hamronization summaries across all samples, might not be necessary, just a test
+        hamronized_summary_tsv=output_folder + "/hamronized/summary/combined_report.tsv",
+        hamronized_summary_html=output_folder + "/hamronized/summary/combined_report.html",
+
+        # Individual Hamronization summaries for each sample
+        hamronized_per_sample_tsv=expand(output_folder + "/hamronized/summary/per_sample/{tag}.tsv",tag=tags),
+        hamronized_per_sample_html=expand(output_folder + "/hamronized/summary/per_sample/{tag}.html",tag=tags),
+
+        # argNorm-based ARO annotation and normalization for cross-tool comparison
+        argnorm_staramr=expand(output_folder + "/argnorm/staramr/{tag}_staramr_argnorm_resfinder.tsv",tag=tags),
+        argnorm_rgi_contig=expand(output_folder + "/argnorm/rgi/contig/{tag}_rgi_argnorm_contig.tsv",tag=tags),
+        argnorm_rgi_reads=expand(output_folder + "/argnorm/rgi/reads/{tag}_rgi_argnorm_reads.tsv",tag=tags),
+
+        # Final per-sample Excel reports comparing AMR detection methods
+        comparison_report=expand(output_folder + "/comparison/reports/{sample}/AMR_cross_tool_comparison.xlsx",sample=sample_names),
+        evidence_report=expand(output_folder + "/comparison/reports/{sample}/AMR_detection_evidence.xlsx",sample=sample_names)
+
+# Assemble paired-end sequencing reads into scaffolds using metaSPAdes.
 rule metaspades:
     input:
-        r1="{config[all][input_fp]}/{tag}_1.fastq.gz",
-        r2="{config[all][input_fp]}/{tag}_2.fastq.gz"
+        # Locate the forward (R1) and reverse (R2) FASTQ files for each sample.
+        r1=lambda wildcards: os.path.join(config["all"]["input_fp"],f"{wildcards.tag}_1.fastq.gz"),
+        r2=lambda wildcards: os.path.join(config["all"]["input_fp"],f"{wildcards.tag}_2.fastq.gz"),
     output:
+        # Store the assembly directory and the resulting scaffolds FASTA file.
         metaspades=directory("{output_folder}/{tag}_metaspades"),
         scaffolds="{output_folder}/{tag}_metaspades/scaffolds.fasta"
+
     threads:
+        # Use the number of threads specified under metaspades in config.yaml.
         config['metaspades']['threads']
     shell:
         """
-        mkdir -p amr
-        metaspades -t 10 -1 {input.r1} -2 {input.r2} -o {output.metaspades} -t {threads}
+        metaspades.py -1 {input.r1} -2 {input.r2} -o {output.metaspades} -t {threads}
         """
 
+# Identify antimicrobial resistance genes in assembled scaffolds using StarAMR.
 rule staramr:
     input:
-        metaspades = "amr/{tag}_metaspades/scaffolds.fasta"
+        # Use the scaffolds generated by metaSPAdes.
+        metaspades = "{output_folder}/{tag}_metaspades/scaffolds.fasta"
     output:
+        # Save StarAMR results, including the Excel report and ResFinder hits.
+        # Should upgrade with PointFinder later.
         staramr = directory("{output_folder}/{tag}_staramr/"),
         results = "{output_folder}/{tag}_staramr/results.xlsx",
         resfinder = "{output_folder}/{tag}_staramr/resfinder.tsv"
     threads:
+        # Read the number of threads from config.yaml.
         config['staramr']['threads']
     shell:
         """
+        # megnézni
         rm -rf {output.staramr}
         staramr search -o {output.staramr} {input.metaspades} -n {threads}
         """
 
+# Convert StarAMR ResFinder results into the standardized AMR reporting format using hAMRonization.
+rule hamronize_staramr:
+    input:
+        # ResFinder resistance gene detections produced by StarAMR.
+        resfinder = "{output_folder}/{tag}_staramr/resfinder.tsv"
+    output:
+        # Standardized TSV file for each sample.
+        "{output_folder}/hamronized/staramr/{tag}.tsv"
+    params:
+        # Record the StarAMR software and ResFinder database versions.
+        software_version = config["hamronization"]["analysis_software_version"],
+        database_version = config["hamronization"]["reference_database_version"],
+
+        # Header template used when no resistance genes are detected.
+        empty_header = os.path.join(scripts_dir, "hamronized_empty_header.tsv")
+    shell:
+        """
+        if [ "$(wc -l < {input.resfinder})" -le 1 ]; then
+            cp {params.empty_header} {output}
+        else
+            conda run --no-capture-output -n hamronization \
+                hamronize staramr \
+                {input.resfinder} \
+                --format tsv \
+                --output {output} \
+                --analysis_software_version {params.software_version} \
+                --reference_database_version {params.database_version}
+        fi
+        """
+
+
+# Identify antimicrobial resistance genes in assembled scaffolds using CARD's Resistance Gene Identifier (RGI).
+rule rgi_contig:
+    input:
+        # Use the scaffolds generated by metaSPAdes.
+        scaffolds = "{output_folder}/{tag}_metaspades/scaffolds.fasta"
+    output:
+        # Store the RGI resistance gene detection results.
+        "{output_folder}/card/contig/{tag}_RGI.txt"
+    threads:
+        # Read the number of threads from config.yaml.
+        config["card"]["threads"]
+    params:
+        # Directory containing the local CARD database.
+        card_dir = config["card"]["database_path"],
+
+        # Absolute path to the original assembly file.
+        input_scaffolds = lambda wc: os.path.abspath(
+            os.path.join(output_folder, f"{wc.tag}_metaspades", "scaffolds.fasta")
+        ),
+
+        # Temporary symbolic link used to access the assembly while running RGI from the CARD database directory.
+        input_alias = lambda wc: os.path.abspath(
+            os.path.join(output_folder, "card", "contig", f"{wc.tag}_scaffolds.fasta")
+        ),
+
+        # Prefix for the RGI output files.
+        output_prefix = lambda wc: os.path.abspath(
+            os.path.join(output_folder, "card", "contig", f"{wc.tag}_RGI")
+        )
+    shell:
+        """
+        # Create the output directory and a symbolic link to the assembly.
+        mkdir -p "$(dirname "{params.output_prefix}")"
+        ln -sf "{params.input_scaffolds}" "{params.input_alias}"
+
+        # Remove the temporary symbolic link when the shell exits.
+        trap 'rm -f "{params.input_alias}"' EXIT
+
+        # Run RGI from the local CARD database directory.
+        cd "{params.card_dir}" &&
+        conda run --no-capture-output -n rgi \
+            rgi main \
+            -i "{params.input_alias}" \
+            -o "{params.output_prefix}" \
+            -t contig \
+            -a BLAST \
+            -n {threads} \
+            -d wgs \
+            --local \
+            --clean
+        """
+
+# Identify antimicrobial resistance genes directly from paired-end reads using CARD/RGI's read-mapping workflow (RGI bwt with KMA).
+rule rgi_reads:
+    input:
+        # Use the original paired-end FASTQ files for each sample.
+        r1 = lambda wc: os.path.join(config["all"]["input_fp"], f"{wc.tag}_1.fastq.gz"),
+        r2 = lambda wc: os.path.join(config["all"]["input_fp"], f"{wc.tag}_2.fastq.gz")
+    output:
+        # Gene-level mapping results and allele-level mapping statistics.
+        gene_mapping = "{output_folder}/card/reads/{tag}_RGI.gene_mapping_data.txt",
+        allele_mapping = "{output_folder}/card/reads/{tag}_RGI.allele_mapping_data.txt"
+    threads:
+        # Read the number of threads from config.yaml.
+        config["card"]["threads"]
+    params:
+        # Directory containing the local CARD database.
+        card_dir = config["card"]["database_path"],
+
+        # Absolute input paths are required because the shell command changes its working directory before running RGI.
+        r1 = lambda wc: os.path.abspath(os.path.join(config["all"]["input_fp"], f"{wc.tag}_1.fastq.gz")),
+        r2 = lambda wc: os.path.abspath(os.path.join(config["all"]["input_fp"], f"{wc.tag}_2.fastq.gz")),
+
+        # Prefix for the read-based RGI output files.
+        output_prefix = lambda wc: os.path.abspath(
+            os.path.join(output_folder, "card", "reads", f"{wc.tag}_RGI")
+        )
+    shell:
+        """
+        # Create the output directory if it does not exist.
+        mkdir -p "$(dirname "{params.output_prefix}")"
+
+        # Run read mapping using KMA and the locally installed CARD database.
+        cd "{params.card_dir}" &&
+        conda run --no-capture-output -n rgi \
+            rgi bwt \
+            -1 "{params.r1}" \
+            -2 "{params.r2}" \
+            -a kma \
+            -n {threads} \
+            -o "{params.output_prefix}" \
+            --local
+        """
+
+# Convert contig-based CARD/RGI resistance gene detections into the standardized hAMRonization TSV format.
+rule hamronize_rgi_contig:
+    input:
+        # Original RGI results generated from assembled scaffolds.
+        "{output_folder}/card/contig/{tag}_RGI.txt"
+    output:
+        # Standardized RGI results for each sample.
+        "{output_folder}/hamronized/rgi/contig/{tag}.tsv"
+    params:
+        # Record the RGI software version and CARD database version.
+        software_version = config["hamronization"]["rgi_software_version"],
+        database_version = config["card"]["database_version"]
+    shell:
+        """
+        # Create the output directory if it does not exist.
+        mkdir -p "$(dirname "{output}")"
+
+        # Convert RGI results into the hAMRonization TSV format.
+        conda run --no-capture-output -n hamronization \
+            hamronize rgi \
+            "{input}" \
+            --format tsv \
+            --output "{output}" \
+            --analysis_software_version {params.software_version} \
+            --reference_database_version {params.database_version} \
+            --input_file_name {wildcards.tag}_contigs
+        """
+
+
+# Convert read-based CARD/RGI results into the standardized hAMRonization format and add coverage depth information.
+rule hamronize_rgi_reads:
+    input:
+        # Gene-level detections and allele-level mapping statistics from RGI bwt.
+        gene_mapping = "{output_folder}/card/reads/{tag}_RGI.gene_mapping_data.txt",
+        allele_mapping = "{output_folder}/card/reads/{tag}_RGI.allele_mapping_data.txt"
+    output:
+        # Final standardized TSV with additional coverage depth information.
+        "{output_folder}/hamronized/rgi/reads/{tag}.tsv"
+    params:
+        # Record the RGI software version and CARD database version.
+        software_version = config["hamronization"]["rgi_software_version"],
+        database_version = config["card"]["database_version"]
+    run:
+        import pandas as pd
+        import os
+
+        # Define a temporary file for the initial hAMRonization output.
+        raw_output = str(output[0]) + ".raw"
+
+        # Create the output directory if necessary.
+        os.makedirs(os.path.dirname(str(output[0])), exist_ok=True)
+
+        # Standardize the RGI gene-mapping results using hAMRonization.
+        shell("""
+            conda run --no-capture-output -n hamronization \
+                hamronize rgi \
+                "{input.gene_mapping}" \
+                --format tsv \
+                --output "{raw_output}" \
+                --analysis_software_version {params.software_version} \
+                --reference_database_version {params.database_version} \
+                --input_file_name {wildcards.tag}_reads
+        """)
+
+        # Read the standardized results while preserving accession identifiers as strings.
+        gene_df = pd.read_csv(
+            raw_output, sep="\t",
+            dtype={"reference_accession": "string"}
+        )
+
+        # Read the allele-mapping results containing coverage depth information.
+        allele_df = pd.read_csv(
+            input.allele_mapping, sep="\t",
+            dtype={"ARO Accession": "string"}
+        )
+
+        # Require unique ARO accessions to avoid ambiguous depth assignments.
+        if allele_df["ARO Accession"].duplicated().any():
+            raise ValueError(
+                f"Duplicate ARO accessions in {input.allele_mapping}"
+            )
+
+        # Create a lookup table linking each ARO accession to its depth.
+        depth_map = allele_df.set_index("ARO Accession")["Depth"]
+
+        # Add coverage depth to standardized detections by matching ARO accessions.
+        gene_df["coverage_depth"] = (
+            gene_df["reference_accession"].map(depth_map)
+        )
+
+        # Save the enriched standardized results and remove the temporary file.
+        gene_df.to_csv(output[0], sep="\t", index=False)
+        os.remove(raw_output)
+
+
+# Summarize standardized AMR detections from StarAMR and CARD/RGI for each sample, producing both tabular and interactive reports.
+rule hamronize_summary_per_sample:
+    input:
+        # Standardized results from the three analysis approaches.
+        staramr = output_folder + "/hamronized/staramr/{tag}.tsv",
+        rgi_contig = output_folder + "/hamronized/rgi/contig/{tag}.tsv",
+        rgi_reads = output_folder + "/hamronized/rgi/reads/{tag}.tsv"
+    output:
+        # Per-sample TSV and interactive HTML summaries.
+        tsv = output_folder + "/hamronized/summary/per_sample/{tag}.tsv",
+        html = output_folder + "/hamronized/summary/per_sample/{tag}.html"
+    shell:
+        """
+        # Create the directory for per-sample summaries.
+        mkdir -p "$(dirname "{output.tsv}")"
+
+        # Generate a tabular TSV summary of the three analysis outputs.
+        conda run --no-capture-output -n hamronization \
+            hamronize summarize -t tsv \
+            -o "{output.tsv}" \
+            "{input.staramr}" "{input.rgi_contig}" "{input.rgi_reads}"
+
+        # Generate an interactive HTML summary of the same results.
+        conda run --no-capture-output -n hamronization \
+            hamronize summarize -t interactive \
+            -o "{output.html}" \
+            "{input.staramr}" "{input.rgi_contig}" "{input.rgi_reads}"
+        """
+
+
+# Generate a combined hAMRonization summary across all samples. Might be unnecessary.
+rule hamronize_summary:
+    input:
+        # Collect all standardized StarAMR, RGI contig and RGI read results for every sample listed in samples.csv.
+        expand(output_folder + "/hamronized/staramr/{tag}.tsv", tag=tags)
+        + expand(output_folder + "/hamronized/rgi/contig/{tag}.tsv", tag=tags)
+        + expand(output_folder + "/hamronized/rgi/reads/{tag}.tsv", tag=tags)
+    output:
+        # Combined TSV and interactive HTML summaries.
+        tsv = output_folder + "/hamronized/summary/combined_report.tsv",
+        html = output_folder + "/hamronized/summary/combined_report.html"
+    shell:
+        """
+        # Create the summary output directory if necessary.
+        mkdir -p "$(dirname "{output.tsv}")"
+
+        # Generate a combined tabular report from all input files.
+        conda run --no-capture-output -n hamronization \
+            hamronize summarize -t tsv \
+            -o "{output.tsv}" {input}
+
+        # Generate an interactive HTML report from the same inputs.
+        conda run --no-capture-output -n hamronization \
+            hamronize summarize -t interactive \
+            -o "{output.html}" {input}
+        """
+
+# Extract scaffolds associated with resistance gene detections identified by StarAMR/ResFinder for downstream taxonomic analysis. Should upgrade to RGI!
 rule select:
     input:
+        # Assembled scaffolds from metaSPAdes.
         metaspades = "{output_folder}/{tag}_metaspades/scaffolds.fasta",
+
+        # Resistance gene detections reported by StarAMR/ResFinder.
         resistances = "{output_folder}/{tag}_staramr/resfinder.tsv"
     output:
+        # FASTA containing only resistance-associated scaffolds.
         resistance_scaffolds = "{output_folder}/{tag}_resistance_scaffolds.fasta"
     shell:
         """
-        python {config[all][scripts]}/select_scaffolds.py {input.metaspades} {input.resistances} {output.resistance_scaffolds}
+        # Extract matching scaffold sequences using the custom Python script.
+        python {scripts_dir}/select_scaffolds.py {input.metaspades} {input.resistances} {output.resistance_scaffolds}
         """
 
+# Assign taxonomic classifications to resistance-associated scaffolds using Kraken2 and the configured reference database.
 rule kraken:
     input:
+        # FASTA containing scaffolds selected using StarAMR/ResFinder detections.
         resistance_scaffolds = "{output_folder}/{tag}_resistance_scaffolds.fasta",
+
+        # Path to the local Kraken2 reference database.
         kraken2_db = config["kraken2"]["db"]
     output:
+        # Kraken2 classification results for each sample.
         kraken2_out = "{output_folder}/{tag}_kraken2_results.txt"
     threads:
+        # Read the number of threads from config.yaml.
         config['kraken2']['threads']
     shell:
         """
-        kraken2 --output {output.kraken2_out} --db {input.kraken2_db} --threads {threads} {input.resistance_scaffolds}
+        # Check whether the FASTA contains at least one sequence header.
+        if grep -q '^>' {input.resistance_scaffolds}; then
+
+            # Classify the resistance-associated scaffolds using Kraken2.
+            kraken2 --output {output.kraken2_out} --db {input.kraken2_db} --threads {threads} {input.resistance_scaffolds}
+        else
+
+            # Create an empty output file if no scaffolds are available.
+            : > {output.kraken2_out}
+            echo "No resistance-associated scaffolds; skipping Kraken2."
+        fi
         """
-        
+
+# Compare resistance-associated scaffolds against a nucleotide reference database using BLASTn to provide sequence similarity evidence.
 rule blast:
     input:
+        # FASTA containing scaffolds selected using StarAMR/ResFinder detections.
         resistance_scaffolds = "{output_folder}/{tag}_resistance_scaffolds.fasta",
-        
+
     output:
+        # Tab-separated BLAST alignment results for each sample.
         blast_out = "{output_folder}/{tag}_blast_results.txt"
     threads:
+        # Read the number of threads from config.yaml.
         config['blast']['threads']
     params:
+        # Read the E-value threshold, reference database and maximum number of target sequences per query from config.yaml.
         evalue = config["blast"]["e-value"],
-        blast_db = config["blast"]["db"]
+        blast_db = config["blast"]["db"],
+        max_target = config["blast"]["max_target"]
     shell:
         """
-        blastn -query {input.resistance_scaffolds} -db {params.blast_db} -out {output.blast_out} -evalue {params.evalue} -outfmt \"6 qseqid sseqid stitle pident length qstart qend sstart send evalue bitscore\" -num_threads {threads} -max_hsps 1 -max_target_seqs 5
+        # Check whether the FASTA contains at least one sequence header.
+        if grep -q '^>' {input.resistance_scaffolds}; then
+
+            # Run BLASTn and save selected alignment fields in tabular format.
+            # Report at most one HSP per query-target pair and limit the number of target sequences using the configured value.
+            blastn -query {input.resistance_scaffolds} -db {params.blast_db} -out {output.blast_out} -evalue {params.evalue} -outfmt "6 qseqid sseqid stitle pident length qstart qend sstart send evalue bitscore" -num_threads {threads} -max_hsps 1 -max_target_seqs {params.max_target}
+        else
+
+            # Create an empty result file if no scaffolds are available.
+            : > {output.blast_out}
+            echo "No resistance-associated scaffolds; skipping BLAST."
+        fi
         """
-        
+
+# Combine StarAMR/ResFinder resistance gene detections with Kraken2 taxonomic classifications and BLAST sequence matches.
 rule collect:
     input:
+        # ResFinder results identifying resistance-associated scaffolds.
         resistance_scaffolds = "{output_folder}/{tag}_staramr/resfinder.tsv",
+
+        # Kraken2 taxonomic classification results.
         kraken2_out = "{output_folder}/{tag}_kraken2_results.txt",
+
+        # BLASTn sequence similarity results.
         blast_out = "{output_folder}/{tag}_blast_results.txt",
-        taxonomy = "/media/data/Sunbeam/regi_kraken2/taxonomy"
+
+        # Kraken2 database directory containing taxonomy information.
+        taxonomy = config["kraken2"]["db"]
     output:
+        # Combined resistance gene and taxonomic evidence report.
         results = "{output_folder}/{tag}_collected_kraken_blast_results.tsv"
     shell:
         """
-        python {config[all][scripts]}/improved_collect.py {input.resistance_scaffolds} {input.kraken2_out} {input.taxonomy} {input.blast_out} {output.results}
+        # Merge the results using the custom collection script.
+        python {scripts_dir}/improved_collect.py {input.resistance_scaffolds} {input.kraken2_out} {input.taxonomy} {input.blast_out} {output.results}
         """

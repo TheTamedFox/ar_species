@@ -10,4 +10,4 @@ else
     exit 1
 fi
 
-snakemake -d "$WORKDIR" -s /media/deltagene/microbiome_2/AR_snakemake/Snakefile "$@"
+snakemake -d "$WORKDIR" -s "$(dirname "$(realpath "$0")")/Snakefile" "$@"

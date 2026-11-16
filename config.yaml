@@ -1,24 +1,54 @@
+# General pipeline settings
 all:
-  #parent folder of the outputs
-  input_fp: ""
-  output_folder: amr
-  #csv formatted list of samples, without header. One sample per line, first column: sample name ("tag")
-  samplelist_fp: samples.csv
-  #full path of the scripts folder
-  scripts: "/media/deltagene/microbiome_2/AR_snakemake/scripts/"
-  
-metaspades:
-  threads: 10
-  
-staramr:
-  threads: 10
-  
-kraken2:
-  db: "/media/deltagene/microbiome_2/k2_plsupf_16gb_20240112"
-  threads: 10
+  # Directory containing paired-end FASTQ input files
+  input_fp: "inputs"
 
+  # Directory for all pipeline outputs
+  output_folder: "amr"
+
+  # Headerless CSV containing one sample identifier per row
+  samplelist_fp: "samples.csv"
+
+  # Directory containing custom Python scripts
+  scripts: "scripts"
+
+
+# metaSPAdes genome assembly
+metaspades:
+  threads: 6
+
+
+# StarAMR resistance gene detection
+staramr:
+  threads: 4
+
+
+# Kraken2 taxonomic classification
+kraken2:
+  db: "/home/itry/kraken2_db"
+  threads: 4
+
+
+# BLASTn sequence similarity analysis
 blast:
-  db: "/media/deltagene/microbiome_2/blast_prok/nt_prok"
+  db: "/mnt/d/Munka/blast_db/ref_prok_rep_genomes"
   e-value: "1e-5"
   max_target: 5
-  threads: 10
+  threads: 4
+
+
+# Software and database version metadata for hAMRonization
+hamronization:
+  # StarAMR and ResFinder versions
+  analysis_software_version: "0.12.3"
+  reference_database_version: "65c9ba3b680d13fe5eb13ec78bf1a4160ef4c6d7"
+
+  # RGI software version
+  rgi_software_version: "6.0.8"
+
+
+# CARD/RGI resistance gene detection
+card:
+  database_version: "4.0.2"
+  database_path: "/mnt/d/Munka/CARD"
+  threads: 4

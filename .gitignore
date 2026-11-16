@@ -1,0 +1,32 @@
+# ==========================================
+# AMR pipeline - Git ignore rules
+# ==========================================
+
+# Raw sequencing inputs
+/inputs/
+
+# Generated pipeline results
+/amr/
+
+# Snakemake working files and metadata
+/.snakemake/
+
+# PyCharm project settings
+/.idea/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Local, run-specific sample list
+/samples.csv

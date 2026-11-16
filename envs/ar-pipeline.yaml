@@ -1,0 +1,27 @@
+# Main Conda environment for the AMR Snakemake pipeline.
+# Package versions reflect the working WSL installation.
+
+name: ar-pipeline
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  # Python and workflow management
+  - python=3.12.15
+  - snakemake=9.24.0
+
+  # Metagenomic assembly and AMR detection
+  - spades=4.3.0
+  - staramr=0.12.3
+
+  # Taxonomic classification and sequence alignment
+  - kraken2=2.17.2
+  - blast=2.17.0
+  - seqkit=2.14.0
+
+  # Python libraries for sequence and tabular data processing
+  - biopython=1.88
+  - pandas=3.1.0
+  - openpyxl=3.1.5

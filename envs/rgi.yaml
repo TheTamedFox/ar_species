@@ -1,0 +1,18 @@
+# Conda environment for CARD/RGI antimicrobial resistance analysis.
+# Package versions reflect the working WSL installation.
+
+name: rgi
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  # CARD Resistance Gene Identifier
+  - rgi=6.0.8
+
+  # Read-based alignment used by RGI
+  - kma=1.7.1
+
+  # Sequence alignment used for contig-based RGI analysis
+  - blast=2.16.0

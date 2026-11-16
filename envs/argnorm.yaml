@@ -1,0 +1,18 @@
+# Conda environment for AMR annotation normalization using argNorm.
+# Package versions reflect the working WSL installation.
+
+name: argnorm
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  # Python runtime
+  - python=3.14.10
+
+  # AMR normalization and CARD ontology annotations
+  - argnorm=1.1.0
+
+  # Tabular data processing
+  - pandas=3.1.1
