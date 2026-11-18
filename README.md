@@ -43,6 +43,56 @@ conda env create -f envs/argnorm.yaml
 conda env create -f envs/hamronization.yaml
 ```
 
+### CARD ontology setup for argNorm
+
+The pipeline uses a validated CARD Antibiotic Resistance Ontology
+(ARO) for annotation normalization.
+
+The ontology is stored in:
+
+`workflow/normalization/data/aro.obo`
+
+This file was obtained from the official CARD ARO repository
+(https://github.com/arpcard/aro) on November 13, 2026.
+Its ontology header is dated August 11, 2026.
+
+For compatibility with pronto 2.7.4, lines beginning with
+`property_value: classified_as_` were removed from the
+downloaded ontology.
+
+The SHA-256 checksum of the validated file is:
+
+`0b132e8fb454b45158793fe691f2d4f4b772bb13e3896d2d1dcfd7db3a2a1318`
+
+After creating the Conda environments, install this ontology
+into the argNorm environment:
+
+```bash
+conda run -n argnorm python workflow/normalization/install_aro_ontology.py install
+```
+
+Verify the installation:
+
+```bash
+conda run -n argnorm python workflow/normalization/install_aro_ontology.py check
+```
+
+The installation script preserves a backup of the original
+argNorm ontology and verifies the installed file using SHA-256.
+
+All three normalization rules (StarAMR/ResFinder, RGI contig
+and RGI reads) verify the ontology before processing. A mismatch
+stops normalization to prevent inconsistent annotations.
+
+This ARO file is used for annotation normalization and is
+separate from the CARD reference database used by RGI.
+
+Ontology updates should be performed deliberately and validated
+before use. The replacement ontology and its expected SHA-256
+checksum must be updated together. Updating the ontology may
+change downstream annotations.
+
+
 Activate the main environment before running the pipeline:
 
 ```bash

@@ -1,22 +1,43 @@
+# Project-local CARD ontology and its installation/verification script.
+ARO_ONTOLOGY = os.path.join(
+    workflow.basedir,
+    "workflow", "normalization", "data", "aro.obo"
+)
+
+ARO_CHECK_SCRIPT = os.path.join(
+    workflow.basedir,
+    "workflow", "normalization", "install_aro_ontology.py"
+)
+
 # Normalize StarAMR/ResFinder resistance gene annotations using the custom normalization script for downstream cross-tool comparison.
 rule normalize_staramr_resfinder:
     input:
         # Original ResFinder resistance gene detections from StarAMR.
-        resfinder = "{output_folder}/{tag}_staramr/resfinder.tsv"
+        resfinder = "{output_folder}/{tag}_staramr/resfinder.tsv",
+
+        # Validated CARD ontology used for resistance annotation.
+        ontology = ARO_ONTOLOGY
     output:
         # Normalized StarAMR/ResFinder results for each sample.
         "{output_folder}/argnorm/staramr/{tag}_staramr_argnorm_resfinder.tsv"
     params:
-        # Locate the normalization script relative to the project directory.
+        # Locate the StarAMR normalization script.
         script = os.path.join(
             workflow.basedir,
             "workflow",
             "normalization",
             "normalize_staramr_resfinder.py"
-        )
+        ),
+
+        # Locate the ontology verification script.
+        ontology_check = ARO_CHECK_SCRIPT
+
     shell:
         """
-        # Run the custom normalization script on the ResFinder results.
+        # Verify that argNorm uses the validated project ontology.
+        conda run --no-capture-output -n argnorm python "{params.ontology_check}" check
+
+        # Normalize the StarAMR/ResFinder results.
         python "{params.script}" "{input.resfinder}" "{output}"
         """
 
@@ -24,7 +45,10 @@ rule normalize_staramr_resfinder:
 rule normalize_rgi_contig:
     input:
         # Original CARD/RGI results generated from assembled scaffolds.
-        "{output_folder}/card/contig/{tag}_RGI.txt"
+        rgi = "{output_folder}/card/contig/{tag}_RGI.txt",
+
+        # Validated CARD ontology used for resistance annotation.
+        ontology = ARO_ONTOLOGY
     output:
         # Normalized contig-based RGI results for each sample.
         "{output_folder}/argnorm/rgi/contig/{tag}_rgi_argnorm_contig.tsv"
@@ -35,19 +59,28 @@ rule normalize_rgi_contig:
             "workflow",
             "normalization",
             "normalize_rgi.py"
-        )
+        ),
+
+        # Locate the ontology verification script.
+        ontology_check = ARO_CHECK_SCRIPT
+
     shell:
         """
-        # Run the normalization script in the argnorm Conda environment.
-        # The "contig" argument selects processing for RGI contig results.
-        conda run --no-capture-output -n argnorm python "{params.script}" "{input}" "{output}" contig
+        # Verify that argNorm uses the validated project ontology.
+        conda run --no-capture-output -n argnorm python "{params.ontology_check}" check
+
+        # Normalize contig-based RGI results.
+        conda run --no-capture-output -n argnorm python "{params.script}" "{input.rgi}" "{output}" contig
         """
 
 # Normalize read-based CARD/RGI resistance gene detections for downstream comparison with StarAMR and contig-based RGI results.
 rule normalize_rgi_reads:
     input:
         # Original RGI gene-mapping results generated from paired-end reads.
-        "{output_folder}/card/reads/{tag}_RGI.gene_mapping_data.txt"
+        rgi = "{output_folder}/card/reads/{tag}_RGI.gene_mapping_data.txt",
+
+        # Validated CARD ontology used for resistance annotation.
+        ontology = ARO_ONTOLOGY
     output:
         # Normalized read-based RGI results for each sample.
         "{output_folder}/argnorm/rgi/reads/{tag}_rgi_argnorm_reads.tsv"
@@ -58,14 +91,19 @@ rule normalize_rgi_reads:
             "workflow",
             "normalization",
             "normalize_rgi.py"
-        )
+        ),
+
+        # Locate the ontology verification script.
+        ontology_check = ARO_CHECK_SCRIPT
+
     shell:
         """
-        # Run the normalization script in the argnorm Conda environment.
-        # The "reads" argument selects processing for RGI read-mapping results.
-        conda run --no-capture-output -n argnorm python "{params.script}" "{input}" "{output}" reads
-        """
+        # Verify that argNorm uses the validated project ontology.
+        conda run --no-capture-output -n argnorm python "{params.ontology_check}" check
 
+        # Normalize read-based RGI results.
+        conda run --no-capture-output -n argnorm python "{params.script}" "{input.rgi}" "{output}" reads
+        """
 # Convert normalized StarAMR/ResFinder results into the shared table format used for cross-tool AMR detection comparisons.
 rule common_format_staramr:
     input:
